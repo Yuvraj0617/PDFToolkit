@@ -1,0 +1,6 @@
+{
+  "name": "PDFToolkit — All-in-One Client-Side PDF Tools",
+  "description": "All-in-one private client-side PDF toolkit: Convert Image to PDF, PDF to Image, Word to PDF, PDF to Word, Merge, Split, Compress, and Edit PDFs directly in your browser with zero server uploads.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
