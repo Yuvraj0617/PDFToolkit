@@ -120,3 +120,29 @@
   border-color: #3b82f6;
   background-color: #1e293b;
 }
+
+/* Authentic Word Preview Container Styles */
+.docx-preview-host .docx-wrapper {
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.docx-preview-host section.docx {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08) !important;
+  margin-bottom: 24px !important;
+  background-color: #ffffff !important;
+  color: #1a1a1a !important;
+  border-radius: 2px !important;
+  max-width: 100% !important;
+  overflow-x: auto !important;
+}
+
+.docx-preview-host table {
+  border-collapse: collapse !important;
+}
+
+.docx-preview-host table td,
+.docx-preview-host table th {
+  border: 1px solid #cbd5e1;
+  padding: 4px 8px;
+}

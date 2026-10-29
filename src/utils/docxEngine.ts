@@ -1,9 +1,12 @@
 import mammoth from 'mammoth';
 import { jsPDF } from 'jspdf';
+import * as docxPreview from 'docx-preview';
+import html2canvas from 'html2canvas';
 
 export interface DocxParseResult {
   fileName: string;
   sizeBytes: number;
+  arrayBuffer: ArrayBuffer;
   htmlContent: string;
   rawText: string;
   paragraphs: string[];
@@ -20,7 +23,7 @@ export interface WordToPdfConfig {
 }
 
 /**
- * Parses a .docx Word document using mammoth in the browser
+ * Parses a .docx Word document using mammoth and stores the raw ArrayBuffer for high-fidelity rendering
  */
 export async function parseDocxFile(file: File): Promise<DocxParseResult> {
   const arrayBuffer = await file.arrayBuffer();
@@ -41,6 +44,7 @@ export async function parseDocxFile(file: File): Promise<DocxParseResult> {
   return {
     fileName: file.name,
     sizeBytes: file.size,
+    arrayBuffer,
     htmlContent: htmlResult.value,
     rawText,
     paragraphs,
@@ -49,116 +53,213 @@ export async function parseDocxFile(file: File): Promise<DocxParseResult> {
 }
 
 /**
- * Converts parsed DOCX content to a styled PDF using jsPDF
+ * Renders the Word document (.docx) into a DOM container element with original fonts,
+ * styles, tables, headers, and layouts using docx-preview
+ */
+export async function renderDocxToContainer(
+  arrayBuffer: ArrayBuffer,
+  container: HTMLElement
+): Promise<void> {
+  container.innerHTML = '';
+  await docxPreview.renderAsync(arrayBuffer, container, undefined, {
+    inWrapper: true,
+    ignoreWidth: false,
+    ignoreHeight: false,
+    ignoreFonts: false,
+    breakPages: true,
+    renderHeaders: true,
+    renderFooters: true,
+    renderFootnotes: true,
+    renderEndnotes: true,
+    useBase64URL: true,
+  });
+}
+
+/**
+ * Converts parsed DOCX content to a high-fidelity PDF preserving original fonts,
+ * font sizes, styles, bold/italic, tables, alignments, and visual formatting.
  */
 export async function convertDocxToPdf(
   parsed: DocxParseResult,
   config: WordToPdfConfig
 ): Promise<{ blob: Blob; blobUrl: string; pageCount: number; sizeBytes: number; fileName: string }> {
   const isA4 = config.pageSize === 'a4';
-  const pageW = isA4 ? 210 : 215.9;
-  const pageH = isA4 ? 297 : 279.4;
+  const pageW = isA4 ? 210 : 215.9; // mm
+  const pageH = isA4 ? 297 : 279.4; // mm
 
-  const margin = config.marginsMm;
-  const printableW = pageW - margin * 2;
-  const printableH = pageH - margin * 2;
+  // Create an offscreen staging container for pixel-perfect layout rendering
+  const stage = document.createElement('div');
+  stage.setAttribute('data-pdf-stage', 'true');
+  stage.style.position = 'fixed';
+  stage.style.left = '-99999px';
+  stage.style.top = '0';
+  stage.style.width = isA4 ? '794px' : '816px'; // 96 DPI CSS pixels matching standard paper width
+  stage.style.backgroundColor = '#ffffff';
+  stage.style.color = '#111827';
+  stage.style.opacity = '1';
+  stage.style.pointerEvents = 'none';
+  stage.style.zIndex = '-99999';
 
-  const pdf = new jsPDF({
-    orientation: 'portrait',
-    unit: 'mm',
-    format: [pageW, pageH],
-  });
+  document.body.appendChild(stage);
 
-  const lineHeightMm = (config.fontSizePt * 0.352778) * config.lineHeight;
-  let currentY = margin + 10;
-  let pageIndex = 1;
+  try {
+    let renderedSuccessfully = false;
 
-  const addHeaderAndFooter = (doc: jsPDF, pageNum: number) => {
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.setTextColor(140, 150, 160);
-
-    // Header Title
-    if (config.documentTitle.trim()) {
-      doc.text(config.documentTitle.trim(), margin, margin - 4);
+    // Primary Engine: Render via docx-preview for 1:1 Word XML fidelity
+    try {
+      await docxPreview.renderAsync(parsed.arrayBuffer, stage, undefined, {
+        inWrapper: true,
+        ignoreWidth: false,
+        ignoreHeight: false,
+        ignoreFonts: false,
+        breakPages: true,
+        renderHeaders: true,
+        renderFooters: true,
+        renderFootnotes: true,
+        renderEndnotes: true,
+        useBase64URL: true,
+      });
+      renderedSuccessfully = true;
+    } catch (renderErr) {
+      console.warn('docx-preview primary render notice, falling back to styled HTML engine:', renderErr);
     }
 
-    // Footer Page Number
-    if (config.showPageNumbers) {
-      doc.text(`Page ${pageNum}`, pageW - margin, pageH - margin + 6, { align: 'right' });
-    }
-  };
-
-  // Optional Document Heading on First Page
-  if (config.documentTitle.trim()) {
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(config.fontSizePt + 8);
-    pdf.setTextColor(24, 32, 48);
-    const titleLines = pdf.splitTextToSize(config.documentTitle.trim(), printableW);
-    pdf.text(titleLines, margin, currentY);
-    currentY += titleLines.length * (config.fontSizePt * 0.45) + 6;
-
-    pdf.setDrawColor(220, 226, 235);
-    pdf.setLineWidth(0.4);
-    pdf.line(margin, currentY, margin + printableW, currentY);
-    currentY += 8;
-  }
-
-  addHeaderAndFooter(pdf, pageIndex);
-
-  // Render paragraphs
-  for (const para of parsed.paragraphs) {
-    // Check if paragraph looks like a heading
-    const isHeading = para.length < 75 && !para.endsWith('.') && para.length > 3;
-
-    if (isHeading) {
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(config.fontSizePt + 2);
-      pdf.setTextColor(30, 41, 59);
-    } else {
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(config.fontSizePt);
-      pdf.setTextColor(51, 65, 85);
+    // Secondary Engine: Fallback to mammoth HTML if docx-preview encountered unusual structure
+    if (!renderedSuccessfully || stage.childNodes.length === 0) {
+      stage.innerHTML = `
+        <div style="padding: ${config.marginsMm}mm; font-family: 'Calibri', 'Segoe UI', Arial, sans-serif; font-size: ${config.fontSizePt}pt; line-height: ${config.lineHeight}; color: #1e293b;">
+          ${config.documentTitle ? `<h1 style="font-size: ${config.fontSizePt + 10}pt; font-weight: bold; margin-bottom: 16px; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px;">${config.documentTitle}</h1>` : ''}
+          <div class="docx-html-body" style="word-break: break-word;">
+            ${parsed.htmlContent}
+          </div>
+        </div>
+      `;
     }
 
-    const lines = pdf.splitTextToSize(para, printableW);
+    // Wait for fonts and nested images to finish loading
+    if ('fonts' in document) {
+      try {
+        await document.fonts.ready;
+      } catch {
+        // ignore font readiness timeouts
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
 
-    for (const line of lines) {
-      if (currentY + lineHeightMm > pageH - margin - 10) {
-        pdf.addPage([pageW, pageH], 'portrait');
-        pageIndex++;
-        currentY = margin + 10;
-        addHeaderAndFooter(pdf, pageIndex);
+    // Identify individual page sections generated by docx-preview
+    const pageSections = stage.querySelectorAll<HTMLElement>('.docx-wrapper > section.docx, section.docx');
 
-        // Restore font settings for current text
-        if (isHeading) {
-          pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(config.fontSizePt + 2);
-          pdf.setTextColor(30, 41, 59);
-        } else {
+    const pdf = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: [pageW, pageH],
+      compress: true,
+    });
+
+    let totalPdfPages = 0;
+
+    if (pageSections.length > 0) {
+      // Process each Word page section with original dimensions and styles
+      for (let i = 0; i < pageSections.length; i++) {
+        const section = pageSections[i];
+        
+        // Ensure clean white background and full visibility for html2canvas
+        section.style.boxShadow = 'none';
+        section.style.margin = '0';
+
+        const canvas = await html2canvas(section, {
+          scale: 2, // 2x print quality
+          useCORS: true,
+          logging: false,
+          backgroundColor: '#ffffff',
+          windowWidth: stage.clientWidth,
+        });
+
+        if (totalPdfPages > 0) {
+          pdf.addPage([pageW, pageH], 'portrait');
+        }
+
+        const imgData = canvas.toDataURL('image/jpeg', 0.95);
+        pdf.addImage(imgData, 'JPEG', 0, 0, pageW, pageH, undefined, 'FAST');
+        totalPdfPages++;
+
+        // Add optional footer page number if configured
+        if (config.showPageNumbers) {
           pdf.setFont('helvetica', 'normal');
-          pdf.setFontSize(config.fontSizePt);
-          pdf.setTextColor(51, 65, 85);
+          pdf.setFontSize(8);
+          pdf.setTextColor(148, 163, 184);
+          pdf.text(`Page ${totalPdfPages}`, pageW - config.marginsMm, pageH - 8, { align: 'right' });
         }
       }
+    } else {
+      // Fallback: Capture full stage element and slice across page heights cleanly
+      const canvas = await html2canvas(stage, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+      });
 
-      pdf.text(line, margin, currentY);
-      currentY += lineHeightMm;
+      const pxPerMm = canvas.width / pageW;
+      const pageHeightPx = Math.floor(pageH * pxPerMm);
+      const totalSlices = Math.ceil(canvas.height / pageHeightPx) || 1;
+
+      for (let sliceIdx = 0; sliceIdx < totalSlices; sliceIdx++) {
+        const sliceY = sliceIdx * pageHeightPx;
+        const currentSliceHeight = Math.min(pageHeightPx, canvas.height - sliceY);
+
+        const pageCanvas = document.createElement('canvas');
+        pageCanvas.width = canvas.width;
+        pageCanvas.height = pageHeightPx;
+        const ctx = pageCanvas.getContext('2d');
+
+        if (ctx) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+          ctx.drawImage(
+            canvas,
+            0,
+            sliceY,
+            canvas.width,
+            currentSliceHeight,
+            0,
+            0,
+            canvas.width,
+            currentSliceHeight
+          );
+        }
+
+        if (totalPdfPages > 0) {
+          pdf.addPage([pageW, pageH], 'portrait');
+        }
+
+        const imgData = pageCanvas.toDataURL('image/jpeg', 0.95);
+        pdf.addImage(imgData, 'JPEG', 0, 0, pageW, pageH, undefined, 'FAST');
+        totalPdfPages++;
+
+        if (config.showPageNumbers) {
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(8);
+          pdf.setTextColor(148, 163, 184);
+          pdf.text(`Page ${totalPdfPages}`, pageW - config.marginsMm, pageH - 8, { align: 'right' });
+        }
+      }
     }
 
-    // Space after paragraph
-    currentY += isHeading ? 4 : 3;
+    const pdfOutputName = parsed.fileName.replace(/\.docx?$/i, '') + '.pdf';
+    const blob = pdf.output('blob');
+    const blobUrl = URL.createObjectURL(blob);
+
+    return {
+      blob,
+      blobUrl,
+      pageCount: totalPdfPages,
+      sizeBytes: blob.size,
+      fileName: pdfOutputName,
+    };
+  } finally {
+    if (stage.parentNode) {
+      stage.parentNode.removeChild(stage);
+    }
   }
-
-  const pdfOutputName = parsed.fileName.replace(/\.docx?$/i, '') + '.pdf';
-  const blob = pdf.output('blob');
-  const blobUrl = URL.createObjectURL(blob);
-
-  return {
-    blob,
-    blobUrl,
-    pageCount: pdf.getNumberOfPages(),
-    sizeBytes: blob.size,
-    fileName: pdfOutputName,
-  };
 }
