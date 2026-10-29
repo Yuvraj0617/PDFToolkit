@@ -1,6 +1,0 @@
-{
-  "summary": "Revised implementation plan standardizing all 5 toolkit features (Image to PDF, Merge, Split, Word to PDF, and Edit PDF) on the Photo-to-PDF simulated paper sheet preview format with continuous vertical scroll, left-hand thumbnail sidebar, zoom controls, and direct download.",
-  "updatedAt": "2026-10-15T17:24:58.225490137Z",
-  "requestFeedback": true,
-  "userFacing": true
-}
